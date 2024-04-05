@@ -1,0 +1,365 @@
+#pragma enable_d3d11_debug_symbols
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Integration
+#pragma kernel SolveIncompressability
+#pragma kernel Extrapolation
+#pragma kernel PreAdvectionUpdate
+#pragma kernel Advection
+#pragma kernel PostAdvectionUpdate
+
+struct CellData
+{
+    float3 velocity;
+    float3 newVelocity;
+    float permeability;
+    float pressure;
+    float density;
+    float newDensity;
+};
+
+RWStructuredBuffer<CellData> cellData;
+
+uint tankSizeX;
+uint tankSizeY;
+uint tankSizeZ;
+uint XStep;
+uint YStep;
+uint ZStep;
+float overRelaxation;
+float computedPressure;
+float tankScale;
+float halfTankScale;
+float invertedTankScale;
+float deltaTime;
+
+uint3 ToGridCoordinates(uint index)
+{
+    uint3 gridCoordinates;
+    gridCoordinates.x = index / XStep;
+    index -= gridCoordinates.x * XStep;
+    gridCoordinates.y = index / YStep;
+    gridCoordinates.z = index % YStep;
+    return gridCoordinates;
+}
+
+float3 VelocityAverage(uint index, bool XInRange, bool YInRange, bool ZInRange)
+{
+    float3 average = float3(0, 0, 0);
+    uint3 divisor = uint3(2, 2, 2);
+    average.x = cellData[index - XStep].velocity.x +
+                cellData[index].velocity.x;
+    average.y = cellData[index - YStep].velocity.y +
+                cellData[index].velocity.y;
+    average.z = cellData[index - ZStep].velocity.z +
+                cellData[index].velocity.z;
+    
+    if (XInRange)
+    {
+        average.y += cellData[index - YStep + XStep].velocity.y +
+                    cellData[index + XStep].velocity.y;
+        average.z += cellData[index - ZStep + XStep].velocity.z +
+                    cellData[index + XStep].velocity.z;
+        divisor.y += 2;
+        divisor.z += 2;
+        
+        if (YInRange)
+        {
+            average.z += cellData[index - ZStep + XStep + YStep].velocity.z +
+                        cellData[index + XStep + YStep].velocity.z;
+            divisor.z += 2;
+        }
+        
+        if (ZInRange)
+        {
+            average.y += cellData[index - YStep + XStep + ZStep].velocity.y +
+                        cellData[index + XStep + ZStep].velocity.y;
+            divisor.y += 2;
+        }
+    }
+    
+    if (YInRange)
+    {
+        average.x += cellData[index - XStep + YStep].velocity.x +
+                    cellData[index + YStep].velocity.x;
+        average.z += cellData[index - ZStep + YStep].velocity.z +
+                    cellData[index + YStep].velocity.z;
+        divisor.x += 2;
+        divisor.z += 2;
+        
+        if (XInRange)
+        {
+            average.z += cellData[index - ZStep + XStep + YStep].velocity.z +
+                        cellData[index + XStep + YStep].velocity.z;
+            divisor.z += 2;
+        }
+        
+        if(ZInRange)
+        {
+            average.x += cellData[index - YStep + XStep + ZStep].velocity.x +
+                        cellData[index + XStep + ZStep].velocity.x;
+            divisor.x += 2;
+        }
+    }
+    
+    if (ZInRange)
+    {
+        average.x += cellData[index - XStep + ZStep].velocity.x +
+                    cellData[index + ZStep].velocity.x;
+        average.y += cellData[index - YStep + ZStep].velocity.y +
+                    cellData[index + ZStep].velocity.y;
+        divisor.x += 2;
+        divisor.y += 2;
+        
+        if (XInRange)
+        {
+            average.y += cellData[index - YStep + XStep + ZStep].velocity.y +
+                        cellData[index + XStep + ZStep].velocity.y;
+            divisor.y += 2;
+        }
+        
+        if (YInRange)
+        {
+            average.x += cellData[index - ZStep + XStep + YStep].velocity.x +
+                        cellData[index + XStep + YStep].velocity.x;
+            divisor.x += 2;
+        }
+    }
+        
+    return average / divisor;
+}
+
+float SampleField(float x, float y, float z, uint field)
+{
+    x = max(min(x, tankSizeX * tankScale), tankScale);
+    y = max(min(y, tankSizeY * tankScale), tankScale);
+    z = max(min(z, tankSizeZ * tankScale), tankScale);
+    
+    float3 d = float3(0, 0, 0);
+    
+    switch (field)
+    {
+        case 0:
+            d.y = halfTankScale;
+            d.z = halfTankScale;
+            break;
+        case 1:
+            d.x = halfTankScale;
+            d.z = halfTankScale;
+            break;
+        case 2:
+            d.x = halfTankScale;
+            d.y = halfTankScale;
+            break;
+        case 3:
+            d.x = halfTankScale;
+            d.y = halfTankScale;
+            d.z = halfTankScale;
+            break;
+    }
+    
+    uint3 start = uint3(min(floor((x - d.x) * invertedTankScale), tankSizeX - 1),
+                        min(floor((y - d.y) * invertedTankScale), tankSizeY - 1),
+                        min(floor((z - d.z) * invertedTankScale), tankSizeZ - 1));
+    uint3 stop = uint3(min(start.x + 1, tankSizeX - 1), 
+                       min(start.y + 1, tankSizeY - 1), 
+                       min(start.z + 1, tankSizeZ - 1));
+    
+    float3 t = float3(((x - d.x) - x * halfTankScale) * invertedTankScale,
+                      ((y - d.y) - y * halfTankScale) * invertedTankScale,
+                      ((z - d.z) - z * halfTankScale) * invertedTankScale);
+    float3 s = 1 - t;
+       
+    // weights
+    float wA = s.x * s.y * s.z;
+    float wB = s.x * s.y * t.z;
+    float wC = s.x * t.y * s.z;
+    float wD = s.x * t.y * t.z;
+    float wE = t.x * s.y * s.z;
+    float wF = t.x * s.y * t.z;
+    float wG = t.x * t.y * s.z;
+    float wH = t.x * t.y * t.z;
+    
+    start = start * uint3(tankSizeY * tankSizeZ, tankSizeZ, 1);
+    stop = stop * uint3(tankSizeY * tankSizeZ, tankSizeZ, 1);
+    
+    uint A = start.x + start.y + start.z;
+    uint B = start.x + start.y + stop.z;
+    uint C = start.x + stop.y + start.z;
+    uint D = start.x + stop.y + stop.z;
+    uint E = stop.x + start.y + start.z;
+    uint F = stop.x + start.y + stop.z;
+    uint G = stop.x + stop.y + start.z;
+    uint H = stop.x + stop.y + stop.z;
+    
+    switch (field)
+    {
+        case 0:    
+            return wA * cellData[A].velocity.x +
+                   wB * cellData[B].velocity.x +
+                   wC * cellData[C].velocity.x +
+                   wD * cellData[D].velocity.x +
+                   wE * cellData[E].velocity.x +
+                   wF * cellData[F].velocity.x +
+                   wG * cellData[G].velocity.x +
+                   wH * cellData[H].velocity.x;
+        case 1:
+            return wA * cellData[A].velocity.y +
+                   wB * cellData[B].velocity.y +
+                   wC * cellData[C].velocity.y +
+                   wD * cellData[D].velocity.y +
+                   wE * cellData[E].velocity.y +
+                   wF * cellData[F].velocity.y +
+                   wG * cellData[G].velocity.y +
+                   wH * cellData[H].velocity.y;
+        case 2:
+            return wA * cellData[A].velocity.z +
+                   wB * cellData[B].velocity.z +
+                   wC * cellData[C].velocity.z +
+                   wD * cellData[D].velocity.z +
+                   wE * cellData[E].velocity.z +
+                   wF * cellData[F].velocity.z +
+                   wG * cellData[G].velocity.z +
+                   wH * cellData[H].velocity.z;
+        case 3:
+            return wA * cellData[A].density +
+                   wB * cellData[B].density +
+                   wC * cellData[C].density +
+                   wD * cellData[D].density +
+                   wE * cellData[E].density +
+                   wF * cellData[F].density +
+                   wG * cellData[G].density +
+                   wH * cellData[H].density;
+    }
+}
+
+[numthreads(64, 1, 1)]
+void Integration(uint3 id : SV_DispatchThreadID)
+{
+}
+
+[numthreads(64, 1, 1)]
+void SolveIncompressability(uint3 id : SV_DispatchThreadID)
+{
+    CellData cell = cellData[id.x];
+    if (cell.permeability == 0.0)
+        return;
+    
+    int cellX0 = id.x - XStep;
+    int cellY0 = id.x - YStep;
+    int cellZ0 = id.x - ZStep;
+    int cellX1 = id.x + XStep;
+    int cellY1 = id.x + YStep;
+    int cellZ1 = id.x + ZStep;
+    
+    float sx0 = cellData[cellX0].permeability;
+    float sy0 = cellData[cellY0].permeability;
+    float sz0 = cellData[cellZ0].permeability;
+    float sx1 = cellData[cellX1].permeability;
+    float sy1 = cellData[cellY1].permeability;
+    float sz1 = cellData[cellZ1].permeability;
+    
+    float scalar = sx0 + sy0 + sz0 + sx1 + sy1 + sz1;
+    
+    if (scalar == 0)
+        return;
+    
+    float divergence = cellData[cellX1].velocity.x -
+                       cell.velocity.x +
+                       cellData[cellY1].velocity.y -
+                       cell.velocity.y +
+                       cellData[cellZ1].velocity.z -
+                       cell.velocity.z;
+    
+    float p = -divergence / scalar;
+    p *= overRelaxation;
+    
+    cell.pressure += computedPressure * p;
+    cell.velocity.x -= sx0 * p;
+    cellData[cellX1].velocity.x += sx1 * p;
+    cell.velocity.y -= sx0 * p;
+    cellData[cellY1].velocity.y += sx1 * p;
+    cell.velocity.z -= sx0 * p;
+    cellData[cellZ1].velocity.z += sx1 * p;
+    
+    cellData[id.x] = cell;
+}
+
+[numthreads(64, 1, 1)]
+void Extrapolation(uint3 id : SV_DispatchThreadID)
+{
+    uint3 gridCoordinates = ToGridCoordinates(id.x);
+    if (gridCoordinates.x == 0)
+        cellData[id.x].velocity.x = cellData[id.x + XStep].velocity.x;
+    if (gridCoordinates.y == 0)
+        cellData[id.x].velocity.y = cellData[id.x + YStep].velocity.y;
+    if (gridCoordinates.z == 0)
+        cellData[id.x].velocity.z = cellData[id.x + ZStep].velocity.z;
+    if (gridCoordinates.x == tankSizeX - 1)
+        cellData[id.x].velocity.x = cellData[id.x - XStep].velocity.x;
+    if (gridCoordinates.y == tankSizeY - 1)
+        cellData[id.x].velocity.y = cellData[id.x - YStep].velocity.y;
+    if (gridCoordinates.z == tankSizeZ - 1)
+        cellData[id.x].velocity.z = cellData[id.x - ZStep].velocity.z;
+}
+
+[numthreads(64, 1, 1)]
+void PreAdvectionUpdate(uint3 id : SV_DispatchThreadID)
+{
+    CellData cell = cellData[id.x];
+    cell.newVelocity = cell.velocity;
+    cell.newDensity = cell.density;
+    cellData[id.x] = cell;
+}
+
+[numthreads(64, 1, 1)]
+void Advection(uint3 id : SV_DispatchThreadID)
+{
+    CellData cell = cellData[id.x];
+    if (cell.permeability == 0.0)
+        return;
+    
+    uint3 gridCoord = ToGridCoordinates(id.x);
+    
+    if (gridCoord.x == 0 || gridCoord.y == 0 || gridCoord.z == 0)
+        return;
+    
+    float3 basePosition = gridCoord * tankScale;
+    bool XInRange = gridCoord.x < tankSizeX;
+    bool YInRange = gridCoord.y < tankSizeY;
+    bool ZInRange = gridCoord.z < tankSizeZ;
+    
+    float3 velocityAverage = VelocityAverage(id.x, XInRange, YInRange, ZInRange);
+    
+    if (YInRange && ZInRange && cellData[id.x - XStep].permeability != 0.0)
+    {
+        float x = basePosition.x - deltaTime * cell.velocity.x;
+        float y = basePosition.y + halfTankScale - deltaTime * velocityAverage.y;
+        float z = basePosition.z + halfTankScale - deltaTime * velocityAverage.z;
+        cell.newVelocity.x = SampleField(x, y, z, 0);
+    }
+    if (XInRange && ZInRange && cellData[id.x - YStep].permeability != 0.0)
+    {
+        float x = basePosition.x + halfTankScale - deltaTime * velocityAverage.x;
+        float y = basePosition.y - deltaTime * cell.velocity.y;
+        float z = basePosition.z + halfTankScale - deltaTime * velocityAverage.z;
+        cell.newVelocity.y = SampleField(x, y, z, 0);
+    }
+    if (XInRange && YInRange && cellData[id.x - ZStep].permeability != 0.0)
+    {
+        float x = basePosition.x + halfTankScale - deltaTime * velocityAverage.x;
+        float y = basePosition.y + halfTankScale - deltaTime * velocityAverage.y;
+        float z = basePosition.z - deltaTime * cell.velocity.z;
+        cell.newVelocity.z = SampleField(x, y, z, 0);
+    }
+    
+    cellData[id.x] = cell;
+}
+
+[numthreads(64, 1, 1)]
+void PostAdvectionUpdate(uint3 id : SV_DispatchThreadID)
+{
+    CellData cell = cellData[id.x];
+    cell.velocity = cell.newVelocity;
+    cell.density = cell.newDensity;
+    cellData[id.x] = cell;
+}

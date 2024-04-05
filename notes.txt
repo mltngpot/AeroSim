@@ -1,0 +1,17 @@
+Eulerian:
+10 Minute Physics w/Mattias Müller
+https://matthias-research.github.io/pages/tenMinutePhysics/index.html
+https://github.com/Habrador/Ten-Minute-Physics-Unity
+
+Lagrangian:
+https://www.youtube.com/watch?v=zbBwKMRyavE -> https://www.youtube.com/watch?v=9M72KrGhYuE
+https://www.youtube.com/watch?v=rSKMYc1CQHE
+
+
+Velocity (u, v, w)
+2D: Avg u = u[x, y] + u[x+1, y] + u[x, y+1] + u[x+1, y+1]
+3D: Avg u = u[x, y, z]   + u[x+1, y, z]   + u[x, y+1, z]   + u[x+1, y+1, z] +
+			u[x, y, z+1] + u[x+1, y, z+1] + u[x, y+1, z+1] + u[x+1, y+1, z+1]
+			
+2D grid: 100 * 200       =   20000
+3D Tank: 100 * 100 * 100 = 1000000
