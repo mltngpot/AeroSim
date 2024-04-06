@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 
 [System.Serializable]
-[StructLayout(LayoutKind.Sequential, Size = 36)]
+[StructLayout(LayoutKind.Sequential, Size = 40)]
 public struct CellData
 {
     public Vector3 velocity; // 12

@@ -1,6 +1,9 @@
 using System;
+using System.Reflection;
+using System.Security.Cryptography;
 using Unity.VisualScripting;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 public class Tank : MonoBehaviour
 {
@@ -26,6 +29,7 @@ public class Tank : MonoBehaviour
     private int integrationKernel;
     private int incompressibilityKernel;
     private int extrapolationKernel;
+    private int preAdvectionUpdateKernel;
     private int advectionKernel;
     private int postAdvectionUpdateKernel;
 
@@ -36,9 +40,10 @@ public class Tank : MonoBehaviour
     private float half_h;
     private float inverted_h;
     private int numCells;
+    private int numCellData;
     private bool unPaused = false;
     private float computedPressure;
-    private int preAdvectionUpdateKernel;
+    private int shaderGroups;
 
     public void Pause()
     {
@@ -59,9 +64,66 @@ public class Tank : MonoBehaviour
         half_h = h / 2;
         inverted_h = 1 / h;
         computedPressure = Density * h / deltaTime;
-        numCells = (tankSize.x + 2) * (tankSize.y + 2)  * (tankSize.z + 2);
+        numCells = (tankSize.x) * (tankSize.y)  * (tankSize.z);
         cells = new Cell[numCells];
-        cellData = new CellData[numCells];
+        numCellData = (tankSize.x + 2) * (tankSize.y + 2) * (tankSize.z + 2);
+        cellData = new CellData[numCellData];
+
+        for (int index = 0; index < numCellData; index++)
+        {
+            CellData cellData = new CellData();
+            Vector3Int position = CellDataToPosition(index);
+            if (position.x == 0 || position.y == 0 || position.z == 0 || position.y == tankSize.y + 1)
+            {
+                cellData.permeability = 0f;
+            }
+            else
+            {
+                cellData.permeability = 1f;
+            }
+            if (position.x == 0)
+            {
+                cellData.velocity.x = wind.x;
+            }
+            if (position.z == 0)
+            {
+                cellData.velocity.z = wind.z;
+            }
+
+            this.cellData[index] = cellData;
+        }
+    }
+
+    private Vector3Int CellToPosition(int index)
+    {
+        int x = index / (tankSize.y * tankSize.z);
+        int y = (index - x * tankSize.y * tankSize.z) / tankSize.z;
+        int z = index - x * tankSize.y * tankSize.z - y * tankSize.z;
+        return new Vector3Int(x, y, z);
+    }
+
+    private Vector3Int CellDataToPosition(int index)
+    {
+        int x = index / ((tankSize.y + 2) * (tankSize.z + 2));
+        int y = (index - x * (tankSize.y + 2) * (tankSize.z + 2)) / (tankSize.z + 2);
+        int z = index - x * (tankSize.y + 2) * (tankSize.z + 2) - y * (tankSize.z + 2);
+        return new Vector3Int(x, y, z);
+    }
+
+    private int CellTo1D(int x, int y, int z)
+    {
+        return ((x * tankSize.y) + y) * tankSize.z + z;
+    }
+
+    private int CellDataTo1D(int x, int y, int z)
+    {
+        return ((x * (tankSize.y + 2)) + y) * (tankSize.z + 2) + z;
+    }
+
+    private int CellIndexToCellDataIndex(int cellIndex)
+    {
+        var position = CellToPosition(cellIndex);
+        return CellDataTo1D(position.x + 1, position.y + 1, position.z + 1);
     }
 
     private void AssembleCells()
@@ -71,26 +133,12 @@ public class Tank : MonoBehaviour
         for (int c = 0; c < cells.Length; c++)
         {
             Cell cell = cells[c];
-            Vector3 position = cell.transform.position;
-            int index = To1D((int)position.x, (int)position.y, (int)position.z);
-
-            if(position.x == 0 || position.y == 0 || position.z == 0 || position.y == tankSize.y + 1)
-            {
-                cellData[index].permeability = 0f;
-            }
-            else
-            {
-                cellData[index].permeability = 1f;
-            }
-            if(position.x == 1)
-            {
-                cellData[index].velocity.x = wind.x;
-            }
-            if(position.z == 1)
-            {
-                cellData[index].velocity.z = wind.z;
-            }
-            cell.data = cellData[index];
+            Vector3 position = cell.transform.localPosition +
+                               cell.transform.parent.localPosition +
+                               cell.transform.parent.parent.localPosition;
+            int index = CellTo1D((int)position.x, (int)position.y, (int)position.z);
+            int dataIndex = CellIndexToCellDataIndex(index);
+            cell.data = cellData[dataIndex];
             cell.setId(position);
             this.cells[index] = cell;
         }
@@ -102,6 +150,7 @@ public class Tank : MonoBehaviour
         for (int i = 0; i < tankSize.x; i++)
         {
             GameObject cell = Instantiate(cellPrefab, row.transform);
+            cell.name = $"Cell_{i}";
             cell.transform.localPosition = new Vector3(i, 0, 0);
             cell.transform.parent = row.transform;
         }
@@ -109,12 +158,14 @@ public class Tank : MonoBehaviour
         for (int j = 0; j < tankSize.y; j++)
         {
             GameObject rowInstance = Instantiate(row, plane.transform);
+            rowInstance.name = $"Row_{j}";
             rowInstance.transform.localPosition = new Vector3(0, j, 0);
             rowInstance.transform.parent = plane.transform;
         }
         for (int k = 0; k < tankSize.z; k++)
         {
             GameObject planeInstance = Instantiate(plane, gameObject.transform);
+            planeInstance.name = $"Plane_{k}";
             planeInstance.transform.localPosition = new Vector3(0, 0, k);
             planeInstance.transform.parent = gameObject.transform;
         }
@@ -123,18 +174,13 @@ public class Tank : MonoBehaviour
         Destroy(plane);
     }
     
-    private int To1D(int x, int y, int z)
-    {
-        return ((x * tankSize.y) + y) * tankSize.z + z;
-    }
-
     private void FixedUpdate()
     {
         if (unPaused)
         {
+            unPaused = false;
             Simulate();
             UpdateCells();
-            unPaused = false;
         }
     }
 
@@ -147,10 +193,17 @@ public class Tank : MonoBehaviour
             {
                 for (int k = 0; k < tankSize.z; k++)
                 {
-                    int index = To1D(i, j, k);
-                    cells[index].UpdateCell(cellData[index]);
-                    cells[index].showVelocity = this.showVelocity;
-                    cells[index].showStreamLine = this.showStreamLine;
+                    int index = CellTo1D(i, j, k);
+                    try
+                    {
+                        cells[index].UpdateCell(cellData[CellIndexToCellDataIndex(index)]);
+                        cells[index].showVelocity = this.showVelocity;
+                        cells[index].showStreamLine = this.showStreamLine;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.Log($"({i}, {j}, {k}) {index}");
+                    }
                 }
             }
         }
@@ -158,7 +211,7 @@ public class Tank : MonoBehaviour
 
     private void InitializeShader()
     {
-        int cellSize = sizeof(float) * 9;
+        int cellSize = sizeof(float) * 10;
         buffer = new ComputeBuffer(cellData.Length, cellSize);
 
         integrationKernel = shader.FindKernel("Integration");
@@ -187,6 +240,8 @@ public class Tank : MonoBehaviour
         shader.SetFloat("halfTankScale", half_h);
         shader.SetFloat("invertedTankScale", inverted_h);
         shader.SetFloat("deltaTime", Time.fixedDeltaTime);
+
+        shaderGroups = buffer.count / 32;
     }
 
 
@@ -194,7 +249,9 @@ public class Tank : MonoBehaviour
     {
         Integrate();
         SolveForIncompressability();
+        buffer.GetData(cellData);
         Extrapolate();
+        buffer.GetData(cellData);
         Advection();
     }
 
@@ -208,19 +265,19 @@ public class Tank : MonoBehaviour
     {
         for (int i = 0; i < incompessibilityIterrations; i++)
         {
-            shader.Dispatch(incompressibilityKernel, 64, 1, 1);
+            shader.Dispatch(incompressibilityKernel, shaderGroups, 1, 1);
         }
     }
 
     private void Extrapolate()
     {
-        shader.Dispatch(extrapolationKernel, 64, 1, 1);
+        shader.Dispatch(extrapolationKernel, shaderGroups, 1, 1);
     }
 
     private void Advection()
     {
-        shader.Dispatch(preAdvectionUpdateKernel, 64, 1, 1);
-        shader.Dispatch(advectionKernel, 64, 1, 1);
-        shader.Dispatch(postAdvectionUpdateKernel, 64, 1, 1);
+        shader.Dispatch(preAdvectionUpdateKernel, shaderGroups, 1, 1);
+        shader.Dispatch(advectionKernel, shaderGroups, 1, 1);
+        shader.Dispatch(postAdvectionUpdateKernel, shaderGroups, 1, 1);
     }
 }

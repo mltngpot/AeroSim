@@ -1,4 +1,3 @@
-#pragma enable_d3d11_debug_symbols
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel Integration
 #pragma kernel SolveIncompressability
@@ -6,6 +5,7 @@
 #pragma kernel PreAdvectionUpdate
 #pragma kernel Advection
 #pragma kernel PostAdvectionUpdate
+#pragma enable_d3d11_debug_symbols
 
 struct CellData
 {
@@ -232,12 +232,12 @@ float SampleField(float x, float y, float z, uint field)
     }
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void Integration(uint3 id : SV_DispatchThreadID)
 {
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void SolveIncompressability(uint3 id : SV_DispatchThreadID)
 {
     CellData cell = cellData[id.x];
@@ -284,7 +284,7 @@ void SolveIncompressability(uint3 id : SV_DispatchThreadID)
     cellData[id.x] = cell;
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void Extrapolation(uint3 id : SV_DispatchThreadID)
 {
     uint3 gridCoordinates = ToGridCoordinates(id.x);
@@ -302,7 +302,7 @@ void Extrapolation(uint3 id : SV_DispatchThreadID)
         cellData[id.x].velocity.z = cellData[id.x - ZStep].velocity.z;
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void PreAdvectionUpdate(uint3 id : SV_DispatchThreadID)
 {
     CellData cell = cellData[id.x];
@@ -311,7 +311,7 @@ void PreAdvectionUpdate(uint3 id : SV_DispatchThreadID)
     cellData[id.x] = cell;
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void Advection(uint3 id : SV_DispatchThreadID)
 {
     CellData cell = cellData[id.x];
@@ -355,7 +355,7 @@ void Advection(uint3 id : SV_DispatchThreadID)
     cellData[id.x] = cell;
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(32, 1, 1)]
 void PostAdvectionUpdate(uint3 id : SV_DispatchThreadID)
 {
     CellData cell = cellData[id.x];
